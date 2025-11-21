@@ -17,26 +17,27 @@ use embedded_io::Write;
 
 use esp_mbedtls_sys::bindings::*;
 
-// For `malloc`, `calloc` and `free` which are provided by `esp-wifi` on baremetal
-#[cfg(any(
-    feature = "esp32",
-    feature = "esp32c3",
-    feature = "esp32c6",
-    feature = "esp32s2",
-    feature = "esp32s3"
-))]
-use esp_wifi as _;
+// Modified: Removed esp_wifi and esp_hal to avoid version conflicts
+// We use esp-alloc instead for malloc/free
+//#[cfg(any(
+//    feature = "esp32",
+//    feature = "esp32c3",
+//    feature = "esp32c6",
+//    feature = "esp32s2",
+//    feature = "esp32s3"
+//))]
+//use esp_wifi as _;
 
 #[cfg(feature = "edge-nal")]
 mod edge_nal;
-#[cfg(any(
-    feature = "esp32",
-    feature = "esp32c3",
-    feature = "esp32c6",
-    feature = "esp32s2",
-    feature = "esp32s3"
-))]
-mod esp_hal;
+//#[cfg(any(
+//    feature = "esp32",
+//    feature = "esp32c3",
+//    feature = "esp32c6",
+//    feature = "esp32s2",
+//    feature = "esp32s3"
+//))]
+//mod esp_hal;
 
 /// Re-export of the `embedded-io` crate so that users don't have to explicitly depend on it
 /// to use e.g. `write_all` or `read_exact`.
@@ -481,10 +482,12 @@ impl Certificates<'_> {
             );
 
             if let Mode::Client { servername } = mode {
-                error_checked!(
-                    mbedtls_ssl_set_hostname(ssl_context, servername.as_ptr(),),
-                    cleanup
-                )?;
+                if !servername.to_bytes().is_empty() {
+                    error_checked!(
+                        mbedtls_ssl_set_hostname(ssl_context, servername.as_ptr(),),
+                        cleanup
+                    )?;
+                }
             }
 
             if let Some(ca_chain) = self.ca_chain {
@@ -537,7 +540,14 @@ impl Certificates<'_> {
                 mbedtls_ssl_conf_own_cert(ssl_config, certificate, private_key);
             }
 
-            mbedtls_ssl_conf_ca_chain(ssl_config, crt, core::ptr::null_mut());
+            // Set CA chain - always required by MbedTLS, but only used for verification when authmode != NONE
+            if self.ca_chain.is_some() {
+                mbedtls_ssl_conf_ca_chain(ssl_config, crt, core::ptr::null_mut());
+            } else {
+                // For insecure mode (VERIFY_NONE), still set CA chain to satisfy MbedTLS requirements
+                // The chain won't be used for verification due to VERIFY_NONE authmode
+                mbedtls_ssl_conf_ca_chain(ssl_config, crt, core::ptr::null_mut());
+            }
             error_checked!(mbedtls_ssl_setup(ssl_context, ssl_config), cleanup)?;
             Ok((
                 drbg_context,
@@ -594,18 +604,18 @@ impl Tls<'_> {
     ///
     /// Note that there could be only one active `Tls` instance at any point in time,
     /// and the function will return an error if there is already an active instance.
-    #[cfg(not(any(
-        feature = "esp32",
-        feature = "esp32c3",
-        feature = "esp32c6",
-        feature = "esp32s2",
-        feature = "esp32s3"
-    )))]
+    //#[cfg(not(any(
+    //    feature = "esp32",
+    //    feature = "esp32c3",
+    //    feature = "esp32c6",
+    //    feature = "esp32s2",
+    //    feature = "esp32s3"
+    //)))]
     pub fn new() -> Result<Self, TlsError> {
         Self::create()
     }
 
-    pub(crate) fn create() -> Result<Self, TlsError> {
+    fn create() -> Result<Self, TlsError> {
         critical_section::with(|cs| {
             let created = TLS_CREATED.borrow(cs).get();
 
